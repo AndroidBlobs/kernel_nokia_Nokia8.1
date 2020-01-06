@@ -220,14 +220,6 @@ static int mmc_decode_scr(struct mmc_card *card)
 
 	if (scr->sda_spec3)
 		scr->cmds = UNSTUFF_BITS(resp, 32, 2);
-
-	/* SD Spec says: any SD Card shall set at least bits 0 and 2 */
-	if (!(scr->bus_widths & SD_SCR_BUS_WIDTH_1) ||
-	    !(scr->bus_widths & SD_SCR_BUS_WIDTH_4)) {
-		pr_err("%s: invalid bus width\n", mmc_hostname(card->host));
-		return -EINVAL;
-	}
-
 	return 0;
 }
 
@@ -1555,6 +1547,7 @@ err:
 
 	pr_err("%s: error %d whilst initialising SD card\n",
 		mmc_hostname(host), err);
+	printk ("BBox::UEC; 43::3\n");
 
 	return err;
 }
