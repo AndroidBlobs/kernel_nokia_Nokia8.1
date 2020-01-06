@@ -449,6 +449,7 @@ static int __cam_req_mgr_send_req(struct cam_req_mgr_core_link *link,
 	struct cam_req_mgr_connected_device *dev = NULL;
 	struct cam_req_mgr_apply_request     apply_req;
 	struct cam_req_mgr_link_evt_data     evt_data;
+	struct cam_req_mgr_tbl_slot 		 *slot = NULL;
 
 	apply_req.link_hdl = link->link_hdl;
 	apply_req.report_if_bubble = 0;
@@ -462,6 +463,46 @@ static int __cam_req_mgr_send_req(struct cam_req_mgr_core_link *link,
 					pd);
 				continue;
 			}
+
+			idx = link->req.apply_data[pd].idx;
+			slot = &dev->pd_tbl->slot[idx];
+
+			/** Just let flash go for this request and other device get restricted **/
+
+			if ((slot->skip_next_frame == true) &&
+		       (slot->dev_hdl == dev->dev_hdl)) {
+		       if (!(dev->dev_info.trigger & trigger))
+			       continue;
+
+		       apply_req.dev_hdl = dev->dev_hdl;
+		       apply_req.request_id =
+		       link->req.apply_data[pd].req_id;
+		       apply_req.trigger_point = trigger;
+		       if (dev->ops && dev->ops->apply_req) {
+			       rc = dev->ops->apply_req(&apply_req);
+			       if (rc)
+			            return rc;
+
+			       CAM_DBG(CAM_CRM,
+			              "kuanlong SEND: link_hdl: %x pd: %d req_id %lld",
+			              link->link_hdl, pd, apply_req.request_id);//lkl
+			       slot->skip_next_frame = false;
+			       slot->is_applied = true;
+			       return -EAGAIN;
+		       }
+		    }
+         }
+    }
+		    for (i = 0; i < link->num_devs; i++) {
+		       dev = &link->l_dev[i];
+		       if (dev) {
+		            pd = dev->dev_info.p_delay;
+		            if (pd >= CAM_PIPELINE_DELAY_MAX) {
+		                CAM_WARN(CAM_CRM, "pd %d greater than max",
+		                         pd);
+		                continue;
+		            }
+
 			if (link->req.apply_data[pd].skip_idx ||
 				link->req.apply_data[pd].req_id < 0) {
 				CAM_DBG(CAM_CRM, "skip %d req_id %lld",
@@ -476,8 +517,15 @@ static int __cam_req_mgr_send_req(struct cam_req_mgr_core_link *link,
 			apply_req.request_id =
 				link->req.apply_data[pd].req_id;
 			idx = link->req.apply_data[pd].idx;
+			slot = &dev->pd_tbl->slot[idx];
 			apply_req.report_if_bubble =
 				in_q->slot[idx].recover;
+
+			if ((slot->dev_hdl == dev->dev_hdl) &&
+				(slot->is_applied == true)) {
+				slot->is_applied = false;
+				continue;
+			}
 
 			trace_cam_req_mgr_apply_request(link, &apply_req, dev);
 
@@ -1325,9 +1373,9 @@ static struct cam_req_mgr_core_link *__cam_req_mgr_reserve_link(
 		return NULL;
 	}
 
-	if (session->num_links >= MAXIMUM_LINKS_PER_SESSION) {
+	if (session->num_links >= MAX_LINKS_PER_SESSION) {
 		CAM_ERR(CAM_CRM, "Reached max links %d per session limit %d",
-			session->num_links, MAXIMUM_LINKS_PER_SESSION);
+			session->num_links, MAX_LINKS_PER_SESSION);
 		return NULL;
 	}
 
@@ -1362,7 +1410,7 @@ static struct cam_req_mgr_core_link *__cam_req_mgr_reserve_link(
 
 	mutex_lock(&session->lock);
 	/*  Loop through and find a free index */
-	for (i = 0; i < MAXIMUM_LINKS_PER_SESSION; i++) {
+	for (i = 0; i < MAX_LINKS_PER_SESSION; i++) {
 		if (!session->links[i]) {
 			CAM_DBG(CAM_CRM,
 				"Free link index %d found, num_links=%d",
@@ -1372,7 +1420,7 @@ static struct cam_req_mgr_core_link *__cam_req_mgr_reserve_link(
 		}
 	}
 
-	if (i == MAXIMUM_LINKS_PER_SESSION) {
+	if (i == MAX_LINKS_PER_SESSION) {
 		CAM_ERR(CAM_CRM, "Free link index not found");
 		goto error;
 	}
@@ -1433,7 +1481,7 @@ static void __cam_req_mgr_unreserve_link(
 		return;
 	}
 
-	for (i = 0; i < MAXIMUM_LINKS_PER_SESSION; i++) {
+	for (i = 0; i < MAX_LINKS_PER_SESSION; i++) {
 		if (session->links[i] == link)
 			session->links[i] = NULL;
 	}
@@ -1445,7 +1493,7 @@ static void __cam_req_mgr_unreserve_link(
 		 * of only having 2 links in a given session
 		 */
 		session->sync_mode = CAM_REQ_MGR_SYNC_MODE_NO_SYNC;
-		for (i = 0; i < MAXIMUM_LINKS_PER_SESSION; i++) {
+		for (i = 0; i < MAX_LINKS_PER_SESSION; i++) {
 			if (session->links[i])
 				session->links[i]->sync_link = NULL;
 		}
@@ -1696,10 +1744,23 @@ int cam_req_mgr_process_add_req(void *priv, void *data)
 	}
 
 	slot = &tbl->slot[idx];
+
+#if 0
 	if (add_req->skip_before_applying > slot->inject_delay) {
 		slot->inject_delay = add_req->skip_before_applying;
 		CAM_DBG(CAM_CRM, "Req_id %llu injecting delay %u",
 			add_req->req_id, add_req->skip_before_applying);
+	}
+#endif
+	slot->is_applied = false;
+	if ((add_req->skip_before_applying & 0xFF) > slot->inject_delay) {
+		slot->inject_delay = (add_req->skip_before_applying & 0xFF);
+		slot->dev_hdl = add_req->dev_hdl;
+		if (add_req->skip_before_applying & SKIP_NEXT_FRAME)
+			slot->skip_next_frame = true;
+		CAM_ERR(CAM_CRM, "kuanlong Req_id %llu injecting delay %u",
+			add_req->req_id,
+			(add_req->skip_before_applying & 0xFF));//lkl
 	}
 
 	if (slot->state != CRM_REQ_STATE_PENDING &&
@@ -2387,7 +2448,7 @@ int cam_req_mgr_destroy_session(
 			ses_info->session_hdl,
 			cam_session->num_links);
 
-		for (i = 0; i < MAXIMUM_LINKS_PER_SESSION; i++) {
+		for (i = 0; i < MAX_LINKS_PER_SESSION; i++) {
 			link = cam_session->links[i];
 
 			if (!link)
@@ -2432,16 +2493,15 @@ int cam_req_mgr_link(struct cam_req_mgr_link_info *link_info)
 		return -EINVAL;
 	}
 
-	mutex_lock(&g_crm_core_dev->crm_lock);
-
 	/* session hdl's priv data is cam session struct */
 	cam_session = (struct cam_req_mgr_core_session *)
 		cam_get_device_priv(link_info->session_hdl);
 	if (!cam_session) {
 		CAM_DBG(CAM_CRM, "NULL pointer");
-		mutex_unlock(&g_crm_core_dev->crm_lock);
 		return -EINVAL;
 	}
+
+	mutex_lock(&g_crm_core_dev->crm_lock);
 
 	/* Allocate link struct and map it with session's request queue */
 	link = __cam_req_mgr_reserve_link(cam_session);
@@ -2629,8 +2689,7 @@ int cam_req_mgr_sync_config(
 	}
 
 	if ((sync_info->num_links < 0) ||
-		(sync_info->num_links >
-		MAX_LINKS_PER_SESSION)) {
+		(sync_info->num_links > MAX_LINKS_PER_SESSION)) {
 		CAM_ERR(CAM_CRM, "Invalid num links %d", sync_info->num_links);
 		return -EINVAL;
 	}
@@ -2775,14 +2834,6 @@ int cam_req_mgr_link_control(struct cam_req_mgr_link_control *control)
 
 	if (!control) {
 		CAM_ERR(CAM_CRM, "Control command is NULL");
-		rc = -EINVAL;
-		goto end;
-	}
-
-	if ((control->num_links <= 0) ||
-		(control->num_links > MAX_LINKS_PER_SESSION)) {
-		CAM_ERR(CAM_CRM, "Invalid number of links %d",
-			control->num_links);
 		rc = -EINVAL;
 		goto end;
 	}

@@ -205,6 +205,8 @@ static void cam_cci_dump_registers(struct cci_device *cci_dev,
 	CAM_INFO(CAM_CCI, "****CCI MASTER %d Registers ****",
 		master);
 	for (i = 0; i < DEBUG_MASTER_REG_COUNT; i++) {
+		if (i == 6)
+			continue;
 		reg_offset = DEBUG_MASTER_REG_START + master*0x100 + i * 4;
 		read_val = cam_io_r_mb(base + reg_offset);
 		CAM_INFO(CAM_CCI, "offset = 0x%X value = 0x%X",
@@ -866,6 +868,7 @@ static int32_t cam_cci_data_queue(struct cci_device *cci_dev,
 	return rc;
 }
 
+#if 0
 static int32_t cam_cci_burst_read(struct v4l2_subdev *sd,
 	struct cam_cci_ctrl *c_ctrl)
 {
@@ -890,6 +893,7 @@ static int32_t cam_cci_burst_read(struct v4l2_subdev *sd,
 		CAM_ERR(CAM_CCI, "Invalid I2C master addr");
 		return -EINVAL;
 	}
+	CAM_INFO(CAM_CCI,  "cci for debug E");
 
 	soc_info = &cci_dev->soc_info;
 	base = soc_info->reg_map[0].mem_base;
@@ -994,6 +998,9 @@ static int32_t cam_cci_burst_read(struct v4l2_subdev *sd,
 	exp_words = ((read_cfg->num_byte / 4) + 1);
 	CAM_DBG(CAM_CCI, "waiting for threshold [exp_words %d]", exp_words);
 
+	CAM_INFO(CAM_CCI,  "cci for debug exp_words: %d,total_read_words: %d, read_cfg->num_byte: %d",
+		exp_words, total_read_words, read_cfg->num_byte);
+
 	while (total_read_words != exp_words) {
 		rem_jiffies = wait_for_completion_timeout(
 			&cci_dev->cci_master_info[master].th_complete,
@@ -1094,10 +1101,11 @@ static int32_t cam_cci_burst_read(struct v4l2_subdev *sd,
 		total_read_words);
 
 rel_mutex:
+	CAM_INFO(CAM_CCI,  "cci for debug X");
 	mutex_unlock(&cci_dev->cci_master_info[master].mutex_q[queue]);
 	return rc;
 }
-
+#endif
 static int32_t cam_cci_read(struct v4l2_subdev *sd,
 	struct cam_cci_ctrl *c_ctrl)
 {
@@ -1458,6 +1466,7 @@ static int32_t cam_cci_read_bytes(struct v4l2_subdev *sd,
 	}
 
 	read_bytes = read_cfg->num_byte;
+#if 0 //BSP 20000130 NEW Code -start
 
 	/*
 	 * To avoid any conflicts due to back to back trigger of
@@ -1490,10 +1499,28 @@ static int32_t cam_cci_read_bytes(struct v4l2_subdev *sd,
 				read_cfg->data_type);
 			read_cfg->data += CCI_I2C_MAX_BYTE_COUNT;
 			read_bytes -= CCI_I2C_MAX_BYTE_COUNT;
+#endif //BSP 20000130 NEW Code -end 
+/* LH Modify cci read method-00+{ */
+    CAM_INFO(CAM_CCI, "cci read_bytes: %d", read_bytes);
+	do {
+		if (read_bytes > CCI_READ_MAX)
+			read_cfg->num_byte = CCI_READ_MAX;
+		else
+			read_cfg->num_byte = read_bytes;
+		rc = cam_cci_read(sd, c_ctrl);
+		if (rc < 0) {
+			CAM_ERR(CAM_CCI, "failed rc %d", rc);
+			goto ERROR;
+		}
+		if (read_bytes > CCI_READ_MAX) {
+			read_cfg->addr += CCI_READ_MAX;
+			read_cfg->data += CCI_READ_MAX;
+			read_bytes -= CCI_READ_MAX;
 		} else {
 			read_bytes = 0;
 		}
 	} while (read_bytes);
+/* LH Modify cci read method-00+}*/
 
 ERROR:
 	cci_dev->is_burst_read = false;
