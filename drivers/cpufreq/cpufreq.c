@@ -1185,7 +1185,6 @@ static struct cpufreq_policy *cpufreq_policy_alloc(unsigned int cpu)
 				   cpufreq_global_kobject, "policy%u", cpu);
 	if (ret) {
 		pr_err("%s: failed to init policy->kobj: %d\n", __func__, ret);
-		kobject_put(&policy->kobj);
 		goto err_free_real_cpus;
 	}
 
@@ -1596,6 +1595,24 @@ unsigned int cpufreq_quick_get(unsigned int cpu)
 	return ret_freq;
 }
 EXPORT_SYMBOL(cpufreq_quick_get);
+
+#ifdef CONFIG_FIH_CPU_USAGE
+void cpufreq_quick_get_infos(unsigned int cpu, unsigned int *min, unsigned int *max, unsigned int *cur)
+{
+	struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
+
+	if (policy) {
+		if (min)
+			*min = policy->min;
+		if (max)
+			*max = policy->max;
+		if (cur)
+			*cur = policy->cur;
+		cpufreq_cpu_put(policy);
+	}
+}
+EXPORT_SYMBOL(cpufreq_quick_get_infos);
+#endif
 
 /**
  * cpufreq_quick_get_max - get the max reported CPU frequency for this CPU

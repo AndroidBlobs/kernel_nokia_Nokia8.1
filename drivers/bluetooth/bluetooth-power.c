@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2010, 2013-2019 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2009-2010, 2013-2018 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -171,8 +171,11 @@ static int bt_configure_vreg(struct bt_power_vreg_data *vreg)
 	/* Get the regulator handle for vreg */
 	if (!(vreg->reg)) {
 		rc = bt_vreg_init(vreg);
-		if (rc < 0)
+		if (rc < 0) {
+			printk("BBox; %s LINE=%d name=%s rc=%d\n", __func__, __LINE__, vreg->name, rc);
+			printk("BBox::UEC;14::0\n");
 			return rc;
+	}
 	}
 	rc = bt_vreg_enable(vreg);
 
@@ -232,18 +235,24 @@ static int bt_configure_gpios(int on)
 		if (rc) {
 			BT_PWR_ERR("unable to request gpio %d (%d)\n",
 					bt_reset_gpio, rc);
+			printk("BBox; %s LINE=%d rc=%d\n", __func__, __LINE__, rc);
+			printk("BBox::UEC;14::0\n");
 			return rc;
 		}
 
 		rc = gpio_direction_output(bt_reset_gpio, 0);
 		if (rc) {
 			BT_PWR_ERR("Unable to set direction\n");
+			printk("BBox; %s LINE=%d rc=%d\n", __func__, __LINE__, rc);
+			printk("BBox::UEC;14::0\n");
 			return rc;
 		}
 		msleep(50);
 		rc = gpio_direction_output(bt_reset_gpio, 1);
 		if (rc) {
 			BT_PWR_ERR("Unable to set direction\n");
+			printk("BBox; %s LINE=%d rc=%d\n", __func__, __LINE__, rc);
+			printk("BBox::UEC;14::0\n");
 			return rc;
 		}
 		msleep(50);
@@ -408,6 +417,10 @@ static int bluetooth_power_rfkill_probe(struct platform_device *pdev)
 
 	if (!rfkill) {
 		dev_err(&pdev->dev, "rfkill allocate failed\n");
+#ifdef BBOX_ENABLE
+		pr_info("BBox; %s LINE=%d\n", __func__, __LINE__);
+		pr_info("BBox::UEC; 14::2\n");
+#endif
 		return -ENOMEM;
 	}
 
@@ -464,6 +477,10 @@ static int bt_dt_parse_vreg_info(struct device *dev,
 		if (!vreg) {
 			dev_err(dev, "No memory for vreg: %s\n", vreg_name);
 			ret = -ENOMEM;
+#ifdef BBOX_ENABLE
+			pr_info("BBox; %s LINE=%d\n", __func__, __LINE__);
+			pr_info("BBox::UEC; 14::2\n");
+#endif
 			goto err;
 		}
 
@@ -556,15 +573,25 @@ static int bt_power_populate_dt_pinfo(struct platform_device *pdev)
 
 	BT_PWR_DBG("");
 
-	if (!bt_power_pdata)
+	if (!bt_power_pdata) {
+#ifdef BBOX_ENABLE
+		pr_info("BBox; %s LINE=%d\n", __func__, __LINE__);
+		pr_info("BBox::UEC; 14::2\n");
+#endif
 		return -ENOMEM;
+	}
 
 	if (pdev->dev.of_node) {
 		bt_power_pdata->bt_gpio_sys_rst =
 			of_get_named_gpio(pdev->dev.of_node,
 						"qca,bt-reset-gpio", 0);
-		if (bt_power_pdata->bt_gpio_sys_rst < 0)
+		if (bt_power_pdata->bt_gpio_sys_rst < 0) {
 			BT_PWR_ERR("bt-reset-gpio not provided in device tree");
+#ifdef BBOX_ENABLE
+			pr_info("BBox; %s LINE=%d\n", __func__, __LINE__);
+			pr_info("BBox::UEC; 14::2\n");
+#endif
+		}
 
 		rc = bt_dt_parse_vreg_info(&pdev->dev,
 					&bt_power_pdata->bt_vdd_core,
@@ -613,23 +640,6 @@ static int bt_power_populate_dt_pinfo(struct platform_device *pdev)
 	return 0;
 }
 
-static int get_bt_reset_gpio_value(void)
-{
-	int rc = 0;
-	int bt_reset_gpio = bt_power_pdata->bt_gpio_sys_rst;
-
-	rc = gpio_request(bt_reset_gpio, "bt_sys_rst_n");
-	if (rc) {
-		BT_PWR_ERR("unable to request gpio %d (%d)\n",
-					bt_reset_gpio, rc);
-		return rc;
-	}
-
-	rc = gpio_get_value(bt_reset_gpio);
-	gpio_free(bt_power_pdata->bt_gpio_sys_rst);
-	return rc;
-}
-
 static int bt_power_probe(struct platform_device *pdev)
 {
 	int ret = 0;
@@ -644,6 +654,10 @@ static int bt_power_probe(struct platform_device *pdev)
 
 	if (!bt_power_pdata) {
 		BT_PWR_ERR("Failed to allocate memory");
+#ifdef BBOX_ENABLE
+		pr_info("BBox; %s LINE=%d\n",__func__,__LINE__);
+		pr_info("BBox::UEC; 14::2\n");
+#endif
 		return -ENOMEM;
 	}
 
@@ -651,6 +665,10 @@ static int bt_power_probe(struct platform_device *pdev)
 		ret = bt_power_populate_dt_pinfo(pdev);
 		if (ret < 0) {
 			BT_PWR_ERR("Failed to populate device tree info");
+#ifdef BBOX_ENABLE
+			pr_info("BBox; %s LINE=%d\n",__func__,__LINE__);
+			pr_info("BBox::UEC; 14::2\n");
+#endif
 			goto free_pdata;
 		}
 		pdev->dev.platform_data = bt_power_pdata;
@@ -676,8 +694,7 @@ static int bt_power_probe(struct platform_device *pdev)
 	btpdev = pdev;
 
 	if (of_id) {
-		if ((strcmp(of_id->compatible, "qca,qca6174") == 0) &&
-			(get_bt_reset_gpio_value() == BT_RESET_GPIO_HIGH_VAL)) {
+		if (strcmp(of_id->compatible, "qca,qca6174") == 0) {
 			bluetooth_toggle_radio(pdev->dev.platform_data, 0);
 			bluetooth_toggle_radio(pdev->dev.platform_data, 1);
 		}
