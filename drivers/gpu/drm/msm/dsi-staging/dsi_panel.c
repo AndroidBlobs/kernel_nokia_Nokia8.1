@@ -23,6 +23,19 @@
 #include "dsi_panel.h"
 #include "dsi_ctrl_hw.h"
 
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+#include "dsi_customize_init.h"
+#include "dsi_customize_pwr.h"
+#include "dsi_customize_debug.h"
+#endif
+
+#ifdef CONFIG_AOD_FEATURE
+#include "dsi_aod.h"
+#endif
+
+#include "../../../fih/fih_touch.h"
+extern struct fih_touch_cb touch_cb;
+
 /**
  * topology is currently defined by a set of following 3 values:
  * 1. num of layer mixers
@@ -42,6 +55,12 @@
 #define DEFAULT_PANEL_JITTER_ARRAY_SIZE		2
 #define MAX_PANEL_JITTER		10
 #define DEFAULT_PANEL_PREFILL_LINES	25
+
+#define BBOX_LCM_DISPLAY_ON_FAIL do {printk("BBox;%s: Display on fail!\n", __func__); printk("BBox::UEC;0::2\n");} while (0);
+#define BBOX_LCM_DISPLAY_OFF_FAIL do {printk("BBox;%s: Display off fail!\n", __func__); printk("BBox::UEC;0::3\n");} while (0);
+#define BBOX_LCM_TE_FAIL do {printk("BBox;%s: TE Request IRQ fail!\n", __func__); printk("BBox::UEC;0::4\n");} while (0);
+#define BBOX_LCM_MIPI_TRANSFER_FAIL do {printk("BBox;%s: MIPI interface unworkable!\n", __func__); printk("BBox::UEC;0::5\n");} while (0);
+#define BBOX_LCM_POWER_STATUS_FAIL do {printk("BBox;%s: Power status fail!\n", __func__); printk("BBox::UEC;0::6\n");} while (0);
 
 enum dsi_dsc_ratio_type {
 	DSC_8BPC_8BPP,
@@ -353,6 +372,8 @@ static int dsi_panel_reset(struct dsi_panel *panel)
 	struct dsi_panel_reset_config *r_config = &panel->reset_config;
 	int i;
 
+	pr_err("++\n");
+
 	if (gpio_is_valid(panel->reset_config.disp_en_gpio)) {
 		rc = gpio_direction_output(panel->reset_config.disp_en_gpio, 1);
 		if (rc) {
@@ -405,6 +426,7 @@ static int dsi_panel_reset(struct dsi_panel *panel)
 			pr_err("unable to set dir for mode gpio rc=%d\n", rc);
 	}
 exit:
+	pr_err("--\n");
 	return rc;
 }
 
@@ -431,11 +453,17 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 {
 	int rc = 0;
 
+	pr_err("++\n");
+
 	rc = dsi_pwr_enable_regulator(&panel->power_info, true);
 	if (rc) {
 		pr_err("[%s] failed to enable vregs, rc=%d\n", panel->name, rc);
 		goto exit;
 	}
+
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+	dsi_panel_customize_pwr_state(panel, true);
+#endif
 
 	rc = dsi_panel_set_pinctrl_state(panel, true);
 	if (rc) {
@@ -462,8 +490,10 @@ error_disable_gpio:
 
 error_disable_vregs:
 	(void)dsi_pwr_enable_regulator(&panel->power_info, false);
+	BBOX_LCM_POWER_STATUS_FAIL;
 
 exit:
+	pr_err("--\n");
 	return rc;
 }
 
@@ -471,11 +501,22 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 {
 	int rc = 0;
 
+	pr_err("++\n");
+
 	if (gpio_is_valid(panel->reset_config.disp_en_gpio))
 		gpio_set_value(panel->reset_config.disp_en_gpio, 0);
 
 	if (gpio_is_valid(panel->reset_config.reset_gpio))
+	{
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+		dsi_panel_customize_reset_state(panel);
+#else
 		gpio_set_value(panel->reset_config.reset_gpio, 0);
+#endif
+	}
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+	dsi_panel_power_off_reset_timing(panel);
+#endif
 
 	if (gpio_is_valid(panel->reset_config.lcd_mode_sel_gpio))
 		gpio_set_value(panel->reset_config.lcd_mode_sel_gpio, 0);
@@ -487,8 +528,15 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 	}
 
 	rc = dsi_pwr_enable_regulator(&panel->power_info, false);
-	if (rc)
+	if (rc) {
 		pr_err("[%s] failed to enable vregs, rc=%d\n", panel->name, rc);
+		BBOX_LCM_POWER_STATUS_FAIL;
+	}
+
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+	dsi_panel_customize_pwr_state(panel, false);
+#endif
+	pr_err("--\n");
 
 	return rc;
 }
@@ -532,6 +580,7 @@ static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 		if (len < 0) {
 			rc = len;
 			pr_err("failed to set cmds(%d), rc=%d\n", type, rc);
+			BBOX_LCM_MIPI_TRANSFER_FAIL;
 			goto error;
 		}
 		if (cmds->post_wait_ms)
@@ -657,6 +706,12 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 	pr_debug("backlight type:%d lvl:%d\n", bl->type, bl_lvl);
 	switch (bl->type) {
 	case DSI_BACKLIGHT_WLED:
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+		dsi_display_pixel_early_off(panel,bl_lvl);
+
+		if(bl_lvl<=panel->bl_config.bl_min_level && bl_lvl!=0)
+			bl_lvl = panel->bl_config.bl_min_level;
+#endif
 		led_trigger_event(bl->wled, bl_lvl);
 		break;
 	case DSI_BACKLIGHT_DCS:
@@ -666,6 +721,9 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		pr_err("Backlight type(%d) not supported\n", bl->type);
 		rc = -ENOTSUPP;
 	}
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+	dsi_panel_show_brightness(bl_lvl);
+#endif
 
 	return rc;
 }
@@ -1436,6 +1494,10 @@ static int dsi_panel_parse_panel_mode(struct dsi_panel *panel,
 		}
 	}
 
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+	dsi_panel_parse_customize_panel_props(panel,of_node);
+#endif
+
 	panel->panel_mode = panel_mode;
 error:
 	return rc;
@@ -1696,6 +1758,15 @@ error:
 
 }
 
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+int dsi_panel_parse_cmd_customize_sets_sub(struct dsi_panel_cmd_set *cmd,
+					enum dsi_cmd_set_type type,
+					struct device_node *of_node)
+{
+	return dsi_panel_parse_cmd_sets_sub(cmd,type,of_node);
+}
+
+#endif
 static int dsi_panel_parse_cmd_sets(
 		struct dsi_display_mode_priv_info *priv_info,
 		struct device_node *of_node)
@@ -2058,6 +2129,10 @@ static int dsi_panel_parse_bl_config(struct dsi_panel *panel,
 	} else {
 		panel->bl_config.brightness_max_level = val;
 	}
+
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+	dsi_panel_parse_customize_bl_props(panel,of_node);
+#endif
 
 	if (panel->bl_config.type == DSI_BACKLIGHT_PWM) {
 		rc = dsi_panel_parse_bl_pwm_config(&panel->bl_config, of_node);
@@ -2702,6 +2777,12 @@ dsi_panel_parse_esd_check_valid_params(struct dsi_panel *panel, u32 count)
 	return true;
 }
 
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+bool dsi_panel_parse_customize_check_valid_params(struct dsi_panel *panel, u32 count)
+{
+	return dsi_panel_parse_esd_check_valid_params(panel,count);
+}
+#endif
 static bool dsi_panel_parse_esd_status_len(struct device_node *np,
 	char *prop_key, u32 **target, u32 cmd_cnt)
 {
@@ -2733,6 +2814,13 @@ static bool dsi_panel_parse_esd_status_len(struct device_node *np,
 	return true;
 }
 
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+bool dsi_panel_parse_customize_status_len(struct device_node *np,
+	char *prop_key, u32 **target, u32 cmd_cnt)
+{
+	return dsi_panel_parse_esd_status_len(np,prop_key,target,cmd_cnt);
+}
+#endif
 static void dsi_panel_esd_config_deinit(struct drm_panel_esd_config *esd_config)
 {
 	kfree(esd_config->status_buf);
@@ -3030,6 +3118,9 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 		goto error;
 	}
 
+#ifdef CONFIG_DRM_DSI_CUSTOMIZE
+	dsi_panel_parse_debug_reg_config(panel, of_node);
+#endif
 	panel->panel_of_node = of_node;
 	drm_panel_init(&panel->drm_panel);
 	mutex_init(&panel->panel_lock);
@@ -3460,6 +3551,7 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 		pr_err("invalid params\n");
 		return -EINVAL;
 	}
+	pr_err("++\n");
 
 	if (panel->type == EXT_BRIDGE)
 		return 0;
@@ -3469,7 +3561,11 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_LP1 cmd, rc=%d\n",
 		       panel->name, rc);
+#ifdef CONFIG_AOD_FEATURE
+		dsi_panel_power_mode(panel,rc,PANEL_LOW_POWER_MODE);
+#endif
 	mutex_unlock(&panel->panel_lock);
+	pr_err("--\n");
 	return rc;
 }
 
@@ -3502,6 +3598,7 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 		pr_err("invalid params\n");
 		return -EINVAL;
 	}
+	pr_err("++\n");
 
 	if (panel->type == EXT_BRIDGE)
 		return 0;
@@ -3511,7 +3608,11 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_NOLP cmd, rc=%d\n",
 		       panel->name, rc);
+#ifdef CONFIG_AOD_FEATURE
+			dsi_panel_power_mode(panel,rc,PANEL_LP_TO_ON_MODE);
+#endif
 	mutex_unlock(&panel->panel_lock);
+	pr_err("--\n");
 	return rc;
 }
 
@@ -3722,6 +3823,7 @@ int dsi_panel_enable(struct dsi_panel *panel)
 		pr_err("Invalid params\n");
 		return -EINVAL;
 	}
+	pr_err("++\n");
 
 	if (panel->type == EXT_BRIDGE)
 		return 0;
@@ -3732,9 +3834,14 @@ int dsi_panel_enable(struct dsi_panel *panel)
 	if (rc) {
 		pr_err("[%s] failed to send DSI_CMD_SET_ON cmds, rc=%d\n",
 		       panel->name, rc);
+		BBOX_LCM_DISPLAY_ON_FAIL;
 	}
 	panel->panel_initialized = true;
+#ifdef CONFIG_AOD_FEATURE
+		dsi_panel_power_mode(panel,rc,PANEL_ON_MODE);
+#endif
 	mutex_unlock(&panel->panel_lock);
+	pr_err("--");
 	return rc;
 }
 
@@ -3772,6 +3879,7 @@ int dsi_panel_pre_disable(struct dsi_panel *panel)
 		return -EINVAL;
 	}
 
+
 	if (panel->type == EXT_BRIDGE)
 		return 0;
 
@@ -3786,6 +3894,7 @@ int dsi_panel_pre_disable(struct dsi_panel *panel)
 
 error:
 	mutex_unlock(&panel->panel_lock);
+
 	return rc;
 }
 
@@ -3801,6 +3910,7 @@ int dsi_panel_disable(struct dsi_panel *panel)
 	if (panel->type == EXT_BRIDGE)
 		return 0;
 
+	pr_err("++\n");
 	mutex_lock(&panel->panel_lock);
 
 	/* Avoid sending panel off commands when ESD recovery is underway */
@@ -3809,13 +3919,18 @@ int dsi_panel_disable(struct dsi_panel *panel)
 		if (rc) {
 			pr_err("[%s] failed to send DSI_CMD_SET_OFF cmds, rc=%d\n",
 					panel->name, rc);
+			BBOX_LCM_DISPLAY_OFF_FAIL;
 			goto error;
 		}
 	}
 	panel->panel_initialized = false;
 
+#ifdef CONFIG_AOD_FEATURE
+		dsi_panel_power_mode(panel,rc,PANEL_OFF_MODE);
+#endif
 error:
 	mutex_unlock(&panel->panel_lock);
+	pr_err("--");
 	return rc;
 }
 
